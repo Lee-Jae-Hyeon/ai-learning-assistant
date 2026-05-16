@@ -20,6 +20,7 @@ import {
   UploadCloud
 } from "lucide-react";
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import { getSession, signIn, signOut } from "next-auth/react";
 import { AppState, AuthProvider, LearningMaterial, Quiz, StudyNote, StudySession, Summary, TimerType, User } from "@/lib/types";
 import { calculateCharacter, createId, formatMinutes, recentDays, summarizeLocally, validateUpload } from "@/lib/study";
 
@@ -57,6 +58,8 @@ export default function Home() {
     if (saved) {
       setState(JSON.parse(saved) as AppState);
     }
+
+    void syncGoogleSession();
   }, []);
 
   useEffect(() => {
@@ -139,11 +142,34 @@ export default function Home() {
     }
   }, [selectedNote?.noteId]);
 
+  async function syncGoogleSession() {
+    const session = await getSession();
+    const email = session?.user?.email;
+
+    if (!email) return;
+
+    const user: User = {
+      userId: `google_${email.toLowerCase()}`,
+      email,
+      nickname: session.user?.name ?? email.split("@")[0],
+      provider: "GOOGLE",
+      createdAt: new Date().toISOString()
+    };
+
+    setState((previous) => ({ ...previous, user }));
+    await persistStore({ operation: "login", user });
+  }
+
   async function login(provider: AuthProvider) {
+    if (provider === "GOOGLE") {
+      await signIn("google", { callbackUrl: "/" });
+      return;
+    }
+
     const user: User = {
       userId: `demo_${provider.toLowerCase()}`,
-      email: provider === "GOOGLE" ? "learner.google@example.com" : "learner.kakao@example.com",
-      nickname: provider === "GOOGLE" ? "Google 학습자" : "Kakao 학습자",
+      email: "learner.kakao@example.com",
+      nickname: "Kakao 학습자",
       provider,
       createdAt: new Date().toISOString()
     };
@@ -152,9 +178,13 @@ export default function Home() {
     await persistStore({ operation: "login", user });
   }
 
-  function logout() {
+  async function logout() {
     setIsRunning(false);
     setState((previous) => ({ ...previous, user: null }));
+    const session = await getSession();
+    if (session) {
+      await signOut({ callbackUrl: "/" });
+    }
   }
 
   async function handleUpload(event: ChangeEvent<HTMLInputElement>) {
@@ -400,7 +430,7 @@ export default function Home() {
           <p>자료 요약, 노트 복습, 타이머 기록, 캐릭터 성장까지 한 흐름으로 관리합니다.</p>
           <div className="auth-actions">
             <button className="provider-button google" onClick={() => login("GOOGLE")}>
-              Google로 시작
+              Google 계정으로 로그인
             </button>
             <button className="provider-button kakao" onClick={() => login("KAKAO")}>
               Kakao로 시작
