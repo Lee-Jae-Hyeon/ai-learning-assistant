@@ -36,6 +36,12 @@ const initialState: AppState = {
 const subjects = ["국어", "영어", "수학", "과학", "사회", "전공", "자격증", "기타"];
 
 type TabId = "overview" | "materials" | "notes" | "timer" | "stats";
+type SessionUser = {
+  email?: string | null;
+  name?: string | null;
+  provider?: string;
+  providerAccountId?: string;
+};
 
 export default function Home() {
   const [state, setState] = useState<AppState>(initialState);
@@ -53,7 +59,7 @@ export default function Home() {
   const timerStartRef = useRef<Date | null>(null);
 
   useEffect(() => {
-    void syncGoogleSession();
+    void syncAuthSession();
   }, []);
 
   useEffect(() => {
@@ -132,17 +138,23 @@ export default function Home() {
     }
   }, [selectedNote?.noteId]);
 
-  async function syncGoogleSession() {
+  async function syncAuthSession() {
     const session = await getSession();
-    const email = session?.user?.email;
+    const sessionUser = session?.user as SessionUser | undefined;
+    const provider = sessionUser?.provider?.toUpperCase();
 
-    if (!email) return;
+    if (provider !== "GOOGLE" && provider !== "KAKAO") return;
+
+    const providerAccountId = sessionUser?.providerAccountId ?? sessionUser?.email ?? sessionUser?.name;
+    if (!providerAccountId) return;
+
+    const email = sessionUser?.email ?? `${providerAccountId}@${provider.toLowerCase()}.local`;
 
     const user: User = {
-      userId: `google_${email.toLowerCase()}`,
+      userId: `${provider.toLowerCase()}_${providerAccountId}`,
       email,
-      nickname: session.user?.name ?? email.split("@")[0],
-      provider: "GOOGLE",
+      nickname: sessionUser?.name ?? email.split("@")[0],
+      provider,
       createdAt: new Date().toISOString()
     };
 
@@ -151,21 +163,7 @@ export default function Home() {
   }
 
   async function login(provider: AuthProvider) {
-    if (provider === "GOOGLE") {
-      await signIn("google", { callbackUrl: "/" });
-      return;
-    }
-
-    const user: User = {
-      userId: `demo_${provider.toLowerCase()}`,
-      email: "learner.kakao@example.com",
-      nickname: "Kakao 학습자",
-      provider,
-      createdAt: new Date().toISOString()
-    };
-
-    setState((previous) => ({ ...previous, user }));
-    await persistStore({ operation: "login", user });
+    await signIn(provider.toLowerCase(), { callbackUrl: "/" });
   }
 
   async function logout() {
