@@ -22,7 +22,7 @@ import {
   X
 } from "lucide-react";
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
-import { getSession, signIn, signOut } from "next-auth/react";
+import { getSession, signOut } from "next-auth/react";
 import { AnkiCard, AnkiGrade, AnkiState, AppState, AuthProvider, LearningMaterial, Quiz, StudyNote, StudySession, Summary, TimerType, User } from "@/lib/types";
 import { addBasicNote, addClozeNote, buildQueue, createAId, esc, getDeckCounts, getCardFB, loadAnkiFromStorage, makeDefaultAnkiState, peekLabel, renderCloze, saveAnkiToStorage, schedule, timeAgo, todayKey } from "@/lib/anki";
 import { calculateCharacter, createId, formatMinutes, recentDays, summarizeLocally, validateUpload } from "@/lib/study";
@@ -47,6 +47,7 @@ export default function Home() {
   const [selectedSummaryId, setSelectedSummaryId] = useState<string>("");
   const [selectedNoteId, setSelectedNoteId] = useState<string>("");
   const [noteDraft, setNoteDraft] = useState({ title: "새 학습 노트", subject: "기타", markdownContent: "## 오늘의 핵심\n- " });
+  const [nicknameDraft, setNicknameDraft] = useState("");
   const [uploadStatus, setUploadStatus] = useState("학습 자료를 업로드하면 AI 요약을 바로 생성합니다.");
   const [isSummarizing, setIsSummarizing] = useState(false);
   const [storageStatus, setStorageStatus] = useState("MongoDB 대기 중");
@@ -226,22 +227,17 @@ export default function Home() {
   }
 
   async function login(provider: AuthProvider) {
-    if (provider === "GOOGLE") {
-      await signIn("google", { callbackUrl: "/" });
-      return;
-    }
-    if (provider === "NAVER") {
-      await signIn("naver", { callbackUrl: "/" });
-      return;
-    }
-
+    const nickname = nicknameDraft.trim();
+    const safeNick = (nickname || "demo").toLowerCase().replace(/\s+/g, "_");
+    const providerName = provider === "GOOGLE" ? "Google" : provider === "NAVER" ? "Naver" : "Kakao";
     const user: User = {
       userId: `demo_${provider.toLowerCase()}`,
-      email: "learner.kakao@example.com",
-      nickname: "Kakao 학습자",
+      email: provider === "GOOGLE" ? `${safeNick}@example.com` : provider === "NAVER" ? "learner.naver@example.com" : "learner.kakao@example.com",
+      nickname: nickname || `${providerName} 학습자`,
       provider,
       createdAt: new Date().toISOString()
     };
+    user.userId = `${provider.toLowerCase()}_${safeNick}`;
 
     setState((previous) => ({ ...previous, user }));
     await persistStore({ operation: "login", user });
@@ -496,18 +492,38 @@ export default function Home() {
             <Sparkles size={28} />
           </div>
           <h1>AI 학습 어시스턴트</h1>
-          <p>자료 요약, 노트 복습, 타이머 기록, 캐릭터 성장까지 한 흐름으로 관리합니다.</p>
+          <p>자료 요약, 노트 복습, Anki 카드, 타이머 기록, 캐릭터 성장까지 한 흐름으로 관리합니다.</p>
+          <div className="nickname-row">
+            <label htmlFor="nickname">닉네임</label>
+            <input
+              id="nickname"
+              type="text"
+              placeholder="화면에 표시할 이름"
+              maxLength={20}
+              autoComplete="nickname"
+              value={nicknameDraft}
+              onChange={(event) => setNicknameDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") void login("KAKAO");
+              }}
+            />
+            <span className="nickname-hint">비우고 진행하면 기본 이름이 사용됩니다.</span>
+          </div>
           <div className="auth-actions">
             <button className="provider-button google" onClick={() => login("GOOGLE")}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="white"><path d="M21.35 11.1H12v3.8h5.32c-.23 1.49-1.7 4.36-5.32 4.36-3.2 0-5.81-2.65-5.81-5.92s2.61-5.92 5.81-5.92c1.82 0 3.04.78 3.74 1.44l2.55-2.46C16.78 4.74 14.62 3.7 12 3.7c-4.79 0-8.67 3.88-8.67 8.67S7.21 21.04 12 21.04c5 0 8.32-3.51 8.32-8.46 0-.57-.06-1-.13-1.48z" /></svg>
               Google 계정으로 로그인
             </button>
             <button className="provider-button kakao" onClick={() => login("KAKAO")}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="#2c2100"><path d="M12 3C6.48 3 2 6.58 2 11c0 2.83 1.84 5.32 4.6 6.74-.2.71-.73 2.57-.83 2.97-.13.5.18.5.39.36.16-.1 2.55-1.73 3.58-2.43.74.11 1.5.16 2.26.16 5.52 0 10-3.58 10-8s-4.48-7.8-10-7.8z" /></svg>
               Kakao로 시작
             </button>
             <button className="provider-button naver" onClick={() => login("NAVER")}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="white"><path d="M16.273 12.845 7.376 0H0v24h7.726V11.155L16.624 24H24V0h-7.727z" /></svg>
               Naver로 시작
             </button>
           </div>
+          <p className="footer-note">로그인 정보는 이 브라우저에만 저장됩니다 (데모용).<br />실제 OAuth 연동은 백엔드 설정 후 가능합니다.</p>
         </section>
       </main>
     );
@@ -519,33 +535,35 @@ export default function Home() {
     .reduce((sum, session) => sum + session.durationMinutes, 0);
 
   return (
-    <main className="app-shell">
+    <div className="app">
       <aside className="sidebar">
         <div>
-          <div className="app-logo">
-            <Sparkles size={22} />
+          <div className="brand">
+            <span className="brand-mark"><Sparkles size={22} /></span>
             <span>AI 학습 어시스턴트</span>
           </div>
-          <nav className="nav-list">
+          <nav className="nav">
             <NavButton icon={<BarChart3 size={18} />} label="대시보드" active={activeTab === "overview"} onClick={() => setActiveTab("overview")} />
             <NavButton icon={<UploadCloud size={18} />} label="자료/요약" active={activeTab === "materials"} onClick={() => setActiveTab("materials")} />
             <NavButton icon={<BookOpenText size={18} />} label="학습 노트" active={activeTab === "notes"} onClick={() => setActiveTab("notes")} />
+            <NavButton icon={<LayersIcon size={18} />} label="Anki" active={activeTab === "anki"} onClick={() => setActiveTab("anki")} />
             <NavButton icon={<Clock3 size={18} />} label="타이머" active={activeTab === "timer"} onClick={() => setActiveTab("timer")} />
             <NavButton icon={<Flame size={18} />} label="통계" active={activeTab === "stats"} onClick={() => setActiveTab("stats")} />
-            <NavButton icon={<LayersIcon size={18} />} label="Anki 카드" active={activeTab === "anki"} onClick={() => setActiveTab("anki")} />
           </nav>
         </div>
-        <div className="profile-box">
-          <strong>{currentUser.nickname}</strong>
-          <span>{currentUser.provider} 로그인</span>
-          <button className="ghost-button" onClick={logout}>
+        <div className="user">
+          <span className="user-avatar">{currentUser.nickname.slice(0, 1).toUpperCase()}</span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div className="user-name">{currentUser.nickname}</div>
+            <div className="user-sub">{currentUser.provider} 로그인</div>
+          </div>
+          <button className="user-logout" title="로그아웃" aria-label="로그아웃" onClick={logout}>
             <LogOut size={16} />
-            로그아웃
           </button>
         </div>
       </aside>
 
-      <section className="content">
+      <main className="main">
         {activeTab === "overview" ? (
           <header className="page-header">
             <div className="title-wrap">
@@ -646,7 +664,7 @@ export default function Home() {
             onStartReview={startReview}
           />
         )}
-      </section>
+      </main>
 
       {reviewOpen && (
         <ReviewModal
@@ -659,7 +677,7 @@ export default function Home() {
           onClose={() => setReviewOpen(false)}
         />
       )}
-    </main>
+    </div>
   );
 }
 
@@ -709,21 +727,12 @@ function Overview({
   const ankiPct = ankiTotal ? Math.round((ankiDone / ankiTotal) * 100) : 0;
 
   return (
-<<<<<<< HEAD
     <div className="overview-grid">
       <div className="overview-main">
         <section className="panel">
           <div className="panel-head">
             <h3 className="panel-title">최근 학습 기록</h3>
             <span className="panel-meta">최신 5개</span>
-=======
-    <div className="overview-layout">
-      <div className="overview-main">
-        <section className="panel">
-          <div className="section-heading">
-            <h3>최근 학습 기록</h3>
-            <span>{sessions.length}개 세션</span>
->>>>>>> ade2f0a890f8f5bea44cb6bc744f936ae8926ad6
           </div>
           <SessionList sessions={sessions.slice(0, 5)} />
           <div className="inline-actions" style={{ marginTop: 16 }}>
@@ -734,7 +743,6 @@ function Overview({
         <CalendarWidget sessions={sessions} />
       </div>
 
-<<<<<<< HEAD
       <aside className="rail">
         <CharacterCard character={character} />
 
@@ -759,32 +767,6 @@ function Overview({
           <div className="anki-foot">
             <div className="anki-progress"><i style={{ width: `${ankiPct}%` }} /></div>
             <button className="anki-cta" type="button" onClick={onGoAnki}>
-=======
-      <aside className="overview-rail">
-        <CharacterCard character={character} />
-
-        <section className="panel rail-stats">
-          <h4>오늘 / 누적</h4>
-          <div className="ts-row"><span>오늘 학습</span><strong>{formatMinutes(todayMinutes)}</strong></div>
-          <div className="ts-row"><span>이번 주</span><strong>{formatMinutes(weekMinutes)}</strong></div>
-          <div className="ts-row"><span>총 학습 시간</span><strong>{formatMinutes(totalMinutes)}</strong></div>
-          <div className="ts-row"><span>연속 학습</span><strong>{streak}일</strong></div>
-        </section>
-
-        <section className="panel anki-widget">
-          <div className="aw-head">
-            <div className="aw-title"><span className="dot" />ANKI 스케줄러</div>
-            <div className="aw-due">오늘 마감 · 23:59</div>
-          </div>
-          <div className="aw-counts">
-            <div className="aw-count new"><span className="n">{totalAnkiNew}</span><span className="l">신규</span></div>
-            <div className="aw-count learn"><span className="n">{totalAnkiLearn}</span><span className="l">학습 중</span></div>
-            <div className="aw-count due"><span className="n">{totalAnkiReview}</span><span className="l">복습</span></div>
-          </div>
-          <div className="aw-foot">
-            <div className="aw-progress"><i style={{ width: `${ankiPct}%` }} /></div>
-            <button className="primary-button" style={{ width: "100%", marginTop: 10 }} onClick={onGoAnki}>
->>>>>>> ade2f0a890f8f5bea44cb6bc744f936ae8926ad6
               복습 시작 →
             </button>
           </div>
@@ -822,7 +804,6 @@ function CalendarWidget({ sessions }: { sessions: StudySession[] }) {
   for (let i = 0; i < trailing; i++) cells.push(<div key={`t${i}`} className="cal-cell empty" />);
 
   return (
-<<<<<<< HEAD
     <section className="panel">
       <div className="cal-head">
         <h3 className="panel-title">{year}년 {month + 1}월</h3>
@@ -830,15 +811,6 @@ function CalendarWidget({ sessions }: { sessions: StudySession[] }) {
           <button className="cal-btn" aria-label="이전 달" onClick={() => setCalDate(d => new Date(d.getFullYear(), d.getMonth() - 1, 1))}>‹</button>
           <button className="cal-btn today-btn" onClick={() => setCalDate(new Date())}>오늘</button>
           <button className="cal-btn" aria-label="다음 달" onClick={() => setCalDate(d => new Date(d.getFullYear(), d.getMonth() + 1, 1))}>›</button>
-=======
-    <section className="panel" style={{ marginTop: 16 }}>
-      <div className="cal-head">
-        <h3 className="section-heading" style={{ margin: 0 }}>{year}년 {month + 1}월</h3>
-        <div className="cal-nav">
-          <button className="cal-btn" onClick={() => setCalDate(d => new Date(d.getFullYear(), d.getMonth() - 1, 1))}>‹</button>
-          <button className="cal-btn" onClick={() => setCalDate(new Date())}>오늘</button>
-          <button className="cal-btn" onClick={() => setCalDate(d => new Date(d.getFullYear(), d.getMonth() + 1, 1))}>›</button>
->>>>>>> ade2f0a890f8f5bea44cb6bc744f936ae8926ad6
         </div>
       </div>
       <div className="cal">
@@ -849,7 +821,6 @@ function CalendarWidget({ sessions }: { sessions: StudySession[] }) {
   );
 }
 
-<<<<<<< HEAD
 function ActivityHeatmap({ sessions }: { sessions: StudySession[] }) {
   const [view, setView] = useState<HeatView>("year");
   const [refDate, setRefDate] = useState(() => new Date());
@@ -997,8 +968,6 @@ function isSameDay(a: Date, b: Date) {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
 
-=======
->>>>>>> ade2f0a890f8f5bea44cb6bc744f936ae8926ad6
 function MaterialsView({
   summaries,
   materials,
