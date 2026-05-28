@@ -77,3 +77,62 @@ export interface AppState {
   quizzes: Quiz[];
   sessions: StudySession[];
 }
+
+// ---- Anki ----
+export type CardState = "new" | "learn" | "review" | "suspended";
+export type AnkiGrade = 0 | 1 | 2 | 3;
+
+export interface AnkiDeck {
+  deckId: string;
+  name: string;
+  createdAt: number;
+}
+
+export interface AnkiNote {
+  noteId: string;
+  deckId: string;
+  type: "basic" | "cloze";
+  fields: { front?: string; back?: string; text?: string; extra?: string };
+  tags: string[];
+  createdAt: number;
+}
+
+export interface AnkiCard {
+  cardId: string;
+  noteId: string;
+  deckId: string;
+  ord: number;
+  state: CardState;
+  ease: number;
+  interval: number;
+  reps: number;
+  lapses: number;
+  learnStep: number;
+  due: number;
+  lastReview: number | null;
+}
+
+export interface AnkiReviewLog {
+  ts: number;
+  cardId: string;
+  grade: AnkiGrade;
+  prevInterval: number;
+  newInterval: number;
+}
+
+export interface AnkiSettings {
+  newPerDay: number;
+  reviewPerDay: number;
+  learnSteps: number[];
+}
+
+export interface AnkiState {
+  activeDeckId: string;
+  decks: AnkiDeck[];
+  notes: AnkiNote[];
+  cards: AnkiCard[];
+  reviewLog: AnkiReviewLog[];
+  todayDate: string;
+  todayCounts: { new: number; learn: number; review: number };
+  settings: AnkiSettings;
+}

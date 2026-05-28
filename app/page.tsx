@@ -8,6 +8,7 @@ import {
   Clock3,
   FileText,
   Flame,
+  LayersIcon,
   LogOut,
   Pause,
   Play,
@@ -17,11 +18,13 @@ import {
   Square,
   TimerReset,
   Trash2,
-  UploadCloud
+  UploadCloud,
+  X
 } from "lucide-react";
-import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getSession, signIn, signOut } from "next-auth/react";
-import { AppState, AuthProvider, LearningMaterial, Quiz, StudyNote, StudySession, Summary, TimerType, User } from "@/lib/types";
+import { AnkiCard, AnkiGrade, AnkiState, AppState, AuthProvider, LearningMaterial, Quiz, StudyNote, StudySession, Summary, TimerType, User } from "@/lib/types";
+import { addBasicNote, addClozeNote, buildQueue, createAId, esc, getDeckCounts, getCardFB, loadAnkiFromStorage, makeDefaultAnkiState, peekLabel, renderCloze, saveAnkiToStorage, schedule, timeAgo, todayKey } from "@/lib/anki";
 import { calculateCharacter, createId, formatMinutes, recentDays, summarizeLocally, validateUpload } from "@/lib/study";
 
 const initialState: AppState = {
@@ -35,7 +38,7 @@ const initialState: AppState = {
 
 const subjects = ["국어", "영어", "수학", "과학", "사회", "전공", "자격증", "기타"];
 
-type TabId = "overview" | "materials" | "notes" | "timer" | "stats";
+type TabId = "overview" | "materials" | "notes" | "timer" | "stats" | "anki";
 
 export default function Home() {
   const [state, setState] = useState<AppState>(initialState);
@@ -52,9 +55,34 @@ export default function Home() {
   const [isRunning, setIsRunning] = useState(false);
   const timerStartRef = useRef<Date | null>(null);
 
+  // Anki state
+  const [anki, setAnki] = useState<AnkiState>(makeDefaultAnkiState);
+  const [ankiLoaded, setAnkiLoaded] = useState(false);
+  const [ankiDeckId, setAnkiDeckId] = useState<string>("");
+  const [ankiSubView, setAnkiSubView] = useState<"today" | "browse" | "stats" | "io">("today");
+  const [ankiSearch, setAnkiSearch] = useState("");
+  const [ankiSelNoteId, setAnkiSelNoteId] = useState("");
+  const [reviewQueue, setReviewQueue] = useState<AnkiCard[]>([]);
+  const [reviewIdx, setReviewIdx] = useState(0);
+  const [reviewBack, setReviewBack] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
+
   useEffect(() => {
     void syncGoogleSession();
   }, []);
+
+  useEffect(() => {
+    const loaded = loadAnkiFromStorage();
+    setAnki(loaded);
+    setAnkiDeckId(loaded.activeDeckId || (loaded.decks[0]?.deckId ?? ""));
+    setAnkiLoaded(true);
+  }, []);
+
+  // persist anki to localStorage on change (but not on first load)
+  useEffect(() => {
+    if (!ankiLoaded) return;
+    saveAnkiToStorage(anki);
+  }, [anki, ankiLoaded]);
 
   useEffect(() => {
     if (!isRunning) return;
@@ -77,6 +105,52 @@ export default function Home() {
       finishTimer();
     }
   }, [seconds, isRunning, timerType]);
+
+  // Anki keyboard shortcuts
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (!reviewOpen) return;
+      if (e.key === "Escape") { setReviewOpen(false); return; }
+      if (!reviewBack) {
+        if (e.key === " " || e.key === "Enter") { e.preventDefault(); setReviewBack(true); }
+      } else {
+        if (e.key === "1") ankiGrade(0);
+        else if (e.key === "2") ankiGrade(1);
+        else if (e.key === "3" || e.key === " " || e.key === "Enter") { e.preventDefault(); ankiGrade(2); }
+        else if (e.key === "4") ankiGrade(3);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [reviewOpen, reviewBack, reviewIdx, reviewQueue]);
+
+  function startReview(deckId: string) {
+    const queue = buildQueue(anki, deckId);
+    setReviewQueue(queue);
+    setReviewIdx(0);
+    setReviewBack(false);
+    setReviewOpen(true);
+  }
+
+  function ankiGrade(grade: AnkiGrade) {
+    const card = reviewQueue[reviewIdx];
+    if (!card) return;
+    const updated = schedule(card, grade, anki.settings.learnSteps);
+    const newCounts = { ...anki.todayCounts };
+    if (card.state === "new") newCounts.new += 1;
+    else if (card.state === "review") newCounts.review += 1;
+    else if (card.state === "learn") newCounts.learn += 1;
+    const newLog = [{ ts: Date.now(), cardId: card.cardId, grade, prevInterval: card.interval, newInterval: updated.interval }, ...anki.reviewLog].slice(0, 1000);
+    const newCards = anki.cards.map(c => c.cardId === card.cardId ? updated : c);
+    let nextQueue = reviewQueue;
+    if (updated.state === "learn" && updated.due - Date.now() < 10 * 60000) {
+      nextQueue = [...reviewQueue, updated];
+    }
+    setAnki(prev => ({ ...prev, cards: newCards, reviewLog: newLog, todayCounts: newCounts }));
+    setReviewQueue(nextQueue);
+    setReviewIdx(i => i + 1);
+    setReviewBack(false);
+  }
 
   const currentUser = state.user;
 
@@ -457,6 +531,7 @@ export default function Home() {
             <NavButton icon={<BookOpenText size={18} />} label="학습 노트" active={activeTab === "notes"} onClick={() => setActiveTab("notes")} />
             <NavButton icon={<Clock3 size={18} />} label="타이머" active={activeTab === "timer"} onClick={() => setActiveTab("timer")} />
             <NavButton icon={<Flame size={18} />} label="통계" active={activeTab === "stats"} onClick={() => setActiveTab("stats")} />
+            <NavButton icon={<LayersIcon size={18} />} label="Anki 카드" active={activeTab === "anki"} onClick={() => setActiveTab("anki")} />
           </nav>
         </div>
         <div className="profile-box">
@@ -544,7 +619,35 @@ export default function Home() {
         )}
 
         {activeTab === "stats" && <StatsView sessions={userSessions} />}
+
+        {activeTab === "anki" && (
+          <AnkiView
+            anki={anki}
+            setAnki={setAnki}
+            deckId={ankiDeckId}
+            setDeckId={setAnkiDeckId}
+            subView={ankiSubView}
+            setSubView={setAnkiSubView}
+            search={ankiSearch}
+            setSearch={setAnkiSearch}
+            selNoteId={ankiSelNoteId}
+            setSelNoteId={setAnkiSelNoteId}
+            onStartReview={startReview}
+          />
+        )}
       </section>
+
+      {reviewOpen && (
+        <ReviewModal
+          queue={reviewQueue}
+          idx={reviewIdx}
+          backShown={reviewBack}
+          anki={anki}
+          onReveal={() => setReviewBack(true)}
+          onGrade={ankiGrade}
+          onClose={() => setReviewOpen(false)}
+        />
+      )}
     </main>
   );
 }
@@ -1053,7 +1156,8 @@ function tabTitle(tabId: TabId) {
     materials: "자료 업로드와 AI 요약",
     notes: "마크다운 노트와 복습",
     timer: "학습 시간 기록",
-    stats: "학습 통계 분석"
+    stats: "학습 통계 분석",
+    anki: "Anki 플래시카드 복습"
   };
 
   return titles[tabId];
@@ -1065,4 +1169,564 @@ function formatTimer(totalSeconds: number) {
   const seconds = (safe % 60).toString().padStart(2, "0");
 
   return `${minutes}:${seconds}`;
+}
+
+// ============================================================
+// Anki components
+// ============================================================
+
+function AnkiView({
+  anki, setAnki, deckId, setDeckId, subView, setSubView,
+  search, setSearch, selNoteId, setSelNoteId, onStartReview
+}: {
+  anki: AnkiState;
+  setAnki: React.Dispatch<React.SetStateAction<AnkiState>>;
+  deckId: string;
+  setDeckId: (id: string) => void;
+  subView: "today" | "browse" | "stats" | "io";
+  setSubView: (v: "today" | "browse" | "stats" | "io") => void;
+  search: string;
+  setSearch: (s: string) => void;
+  selNoteId: string;
+  setSelNoteId: (id: string) => void;
+  onStartReview: (deckId: string) => void;
+}) {
+  const activeDeck = anki.decks.find(d => d.deckId === deckId) ?? anki.decks[0];
+
+  function mutate(fn: (s: AnkiState) => AnkiState) {
+    setAnki(prev => fn({ ...prev }));
+  }
+
+  function addDeck() {
+    const name = prompt("새 덱 이름:");
+    if (!name?.trim()) return;
+    mutate(s => {
+      const deck = { deckId: createAId("deck"), name: name.trim(), createdAt: Date.now() };
+      return { ...s, decks: [...s.decks, deck] };
+    });
+  }
+
+  function deleteDeck() {
+    if (!activeDeck) return;
+    if (anki.decks.length === 1) { alert("마지막 덱은 삭제할 수 없습니다."); return; }
+    if (!confirm(`"${activeDeck.name}" 덱과 모든 카드를 삭제할까요?`)) return;
+    mutate(s => {
+      const noteIds = new Set(s.cards.filter(c => c.deckId === activeDeck.deckId).map(c => c.noteId));
+      const newDecks = s.decks.filter(d => d.deckId !== activeDeck.deckId);
+      setDeckId(newDecks[0]?.deckId ?? "");
+      return {
+        ...s,
+        decks: newDecks,
+        cards: s.cards.filter(c => c.deckId !== activeDeck.deckId),
+        notes: s.notes.filter(n => !noteIds.has(n.noteId)),
+      };
+    });
+  }
+
+  function addCard() {
+    if (!activeDeck) return;
+    const type = confirm("OK = Basic (앞/뒤), 취소 = Cloze (빈칸)") ? "basic" : "cloze";
+    if (type === "basic") {
+      const front = prompt("앞면:");
+      if (!front) return;
+      const back = prompt("뒷면:");
+      if (!back) return;
+      mutate(s => { addBasicNote(s, activeDeck.deckId, front, back, []); return s; });
+    } else {
+      const text = prompt("Cloze 본문 (예: 수도는 {{c1::서울}}):");
+      if (!text) return;
+      mutate(s => { addClozeNote(s, activeDeck.deckId, text, "", []); return s; });
+    }
+  }
+
+  async function aiGenerate() {
+    if (!activeDeck) return;
+    const userText = prompt("카드로 만들 학습 자료를 붙여넣으세요:");
+    if (!userText) return;
+    try {
+      const res = await fetch("/api/ai/quiz", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: activeDeck.name, content: userText })
+      });
+      const data = await res.json() as { quizzes: Array<{ question: string; answer: string }> };
+      mutate(s => {
+        for (const q of data.quizzes) addBasicNote(s, activeDeck.deckId, q.question, q.answer, []);
+        return s;
+      });
+      alert(`${data.quizzes.length}장 추가 완료`);
+    } catch {
+      alert("AI 응답을 파싱하지 못했습니다.");
+    }
+  }
+
+  function exportJSON() {
+    const blob = new Blob([JSON.stringify(anki, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `anki-backup-${todayKey()}.json`; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  async function importJSON(file: File) {
+    try {
+      const imported = JSON.parse(await file.text()) as AnkiState;
+      mutate(s => {
+        const idMap = new Map<string, string>();
+        for (const d of imported.decks ?? []) {
+          const existing = s.decks.find(x => x.name === d.name);
+          const newId = existing?.deckId ?? createAId("deck");
+          if (!existing) s.decks.push({ ...d, deckId: newId });
+          idMap.set(d.deckId, newId);
+        }
+        for (const n of imported.notes ?? []) {
+          const newId = createAId("note");
+          idMap.set(n.noteId, newId);
+          s.notes.push({ ...n, noteId: newId, deckId: idMap.get(n.deckId) ?? s.decks[0].deckId });
+        }
+        for (const c of imported.cards ?? []) {
+          s.cards.push({ ...c, cardId: createAId("card"), noteId: idMap.get(c.noteId) ?? c.noteId, deckId: idMap.get(c.deckId) ?? c.deckId });
+        }
+        return s;
+      });
+      alert("가져오기 완료");
+    } catch { alert("잘못된 JSON 파일입니다."); }
+  }
+
+  async function importCSV(file: File) {
+    if (!activeDeck) return;
+    const text = await file.text();
+    const lines = text.split(/\r?\n/).filter(l => l.trim());
+    let added = 0;
+    mutate(s => {
+      for (const line of lines) {
+        const parts = line.includes("\t") ? line.split("\t") : line.split(",");
+        if (parts.length >= 2 && parts[0] && parts[1]) {
+          addBasicNote(s, activeDeck.deckId, parts[0].trim(), parts[1].trim(), []);
+          added++;
+        }
+      }
+      return s;
+    });
+    alert(`${added}장 추가 완료`);
+  }
+
+  function saveNote(noteId: string, fields: Record<string, string>, tags: string[]) {
+    mutate(s => {
+      const n = s.notes.find(x => x.noteId === noteId);
+      if (!n) return s;
+      if (n.type === "basic") {
+        n.fields = { front: fields.front ?? "", back: fields.back ?? "" };
+      } else {
+        n.fields = { text: fields.text ?? "", extra: fields.extra ?? "" };
+        const matches = [...(fields.text ?? "").matchAll(/\{\{c(\d+)::/g)];
+        const ords = [...new Set(matches.map(m => parseInt(m[1], 10)))].sort((a, b) => a - b);
+        const haveOrds = new Set(s.cards.filter(c => c.noteId === noteId).map(c => c.ord));
+        for (const o of ords) if (!haveOrds.has(o)) {
+          s.cards.push({ cardId: createAId("card"), noteId, deckId: n.deckId, ord: o, state: "new", ease: 2.5, interval: 0, reps: 0, lapses: 0, learnStep: 0, due: Date.now(), lastReview: null });
+        }
+        s.cards = s.cards.filter(c => c.noteId !== noteId || ords.includes(c.ord));
+      }
+      n.tags = tags;
+      return s;
+    });
+  }
+
+  function deleteNote(noteId: string) {
+    if (!confirm("이 카드를 삭제할까요?")) return;
+    mutate(s => ({
+      ...s,
+      notes: s.notes.filter(n => n.noteId !== noteId),
+      cards: s.cards.filter(c => c.noteId !== noteId),
+    }));
+    setSelNoteId("");
+  }
+
+  function resetNote(noteId: string) {
+    if (!confirm("이 노트의 진도를 초기화할까요?")) return;
+    mutate(s => ({
+      ...s,
+      cards: s.cards.map(c => c.noteId !== noteId ? c : { ...c, state: "new", ease: 2.5, interval: 0, reps: 0, lapses: 0, learnStep: 0, due: Date.now(), lastReview: null }),
+    }));
+  }
+
+  return (
+    <div className="anki-shell">
+      <aside className="anki-deck-rail">
+        <div className="anki-rail-head">
+          <span>덱</span>
+          <button className="icon-button" onClick={addDeck} aria-label="덱 추가"><Plus size={15} /></button>
+        </div>
+        {anki.decks.map(d => {
+          const c = getDeckCounts(anki, d.deckId);
+          return (
+            <button key={d.deckId} className={`deck-item ${d.deckId === deckId ? "active" : ""}`} onClick={() => { setDeckId(d.deckId); setSelNoteId(""); }}>
+              <strong>{d.name}</strong>
+              <span className="deck-counts">
+                <em className="dc new">{c.new}</em>
+                <em className="dc learn">{c.learn}</em>
+                <em className="dc due">{c.review}</em>
+              </span>
+            </button>
+          );
+        })}
+        <div style={{ marginTop: 8, display: "flex", gap: 6 }}>
+          <button className="ghost-button" style={{ fontSize: 11, flex: 1 }} onClick={deleteDeck}>삭제</button>
+        </div>
+      </aside>
+
+      <div className="anki-main-area">
+        <div className="anki-seg-wrap">
+          <div className="segmented">
+            {(["today", "browse", "stats", "io"] as const).map(v => (
+              <button key={v} className={subView === v ? "active" : ""} onClick={() => setSubView(v)}>
+                {{ today: "오늘", browse: "브라우저", stats: "통계", io: "가져오기/내보내기" }[v]}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {subView === "today" && activeDeck && (
+          <AnkiToday anki={anki} deck={activeDeck} onStartReview={onStartReview} onAddCard={addCard} />
+        )}
+        {subView === "browse" && activeDeck && (
+          <AnkiBrowse
+            anki={anki} deck={activeDeck}
+            search={search} setSearch={setSearch}
+            selNoteId={selNoteId} setSelNoteId={setSelNoteId}
+            onAddCard={addCard} onAiGenerate={aiGenerate}
+            onSaveNote={saveNote} onDeleteNote={deleteNote} onResetNote={resetNote}
+          />
+        )}
+        {subView === "stats" && activeDeck && (
+          <AnkiStats anki={anki} deck={activeDeck} />
+        )}
+        {subView === "io" && activeDeck && (
+          <AnkiIO deck={activeDeck} onExport={exportJSON} onImportJSON={importJSON} onImportCSV={importCSV} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AnkiToday({ anki, deck, onStartReview, onAddCard }: {
+  anki: AnkiState;
+  deck: { deckId: string; name: string };
+  onStartReview: (id: string) => void;
+  onAddCard: () => void;
+}) {
+  const c = getDeckCounts(anki, deck.deckId);
+  const reviewed = anki.todayCounts.new + anki.todayCounts.learn + anki.todayCounts.review;
+  const log = anki.reviewLog.slice(0, 12);
+  const gradeLabels = ["다시", "어려움", "알맞음", "쉬움"];
+  const gradeCls = ["again", "hard", "good", "easy"];
+
+  return (
+    <div className="anki-today">
+      <header className="at-head">
+        <div>
+          <p className="eyebrow">덱</p>
+          <h3 className="at-deck-name">{deck.name}</h3>
+          <p className="at-sub">총 {c.total}장 · 오늘 {reviewed}장 학습</p>
+        </div>
+        <div className="at-actions">
+          <button className="primary-button" onClick={() => onStartReview(deck.deckId)}>복습 시작 →</button>
+          <button className="secondary-button" onClick={onAddCard}><Plus size={15} /> 카드 추가</button>
+        </div>
+      </header>
+      <div className="at-cards">
+        <div className="at-card new"><span className="lbl">신규</span><strong>{c.new}</strong><em>한도 {anki.settings.newPerDay}</em></div>
+        <div className="at-card learn"><span className="lbl">학습 중</span><strong>{c.learn}</strong><em>분 단위 step</em></div>
+        <div className="at-card due"><span className="lbl">복습</span><strong>{c.review}</strong><em>한도 {anki.settings.reviewPerDay}</em></div>
+      </div>
+      <section className="panel" style={{ marginTop: 16 }}>
+        <div className="section-heading"><h3>최근 평가</h3><span>최근 12회</span></div>
+        {log.length === 0 ? <p className="empty-text">아직 평가 기록이 없습니다.</p> : (
+          <div className="log-list">
+            {log.map((l, i) => {
+              const card = anki.cards.find(c => c.cardId === l.cardId);
+              const note = card ? anki.notes.find(n => n.noteId === card.noteId) : null;
+              const raw = note ? (note.type === "cloze" ? note.fields.text ?? "" : note.fields.front ?? "") : "(삭제됨)";
+              const preview = raw.replace(/\{\{c\d+::([^}:]+)(?:::[^}]*)?\}\}/g, "$1").slice(0, 60);
+              return (
+                <div className="log-row" key={i}>
+                  <span className={`grade-badge ${gradeCls[l.grade]}`}>{gradeLabels[l.grade]}</span>
+                  <div className="log-text">{preview}</div>
+                  <span className="log-time">{timeAgo(l.ts)}</span>
+                  <span className="log-int">{l.prevInterval}→{l.newInterval}일</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function AnkiBrowse({ anki, deck, search, setSearch, selNoteId, setSelNoteId, onAddCard, onAiGenerate, onSaveNote, onDeleteNote, onResetNote }: {
+  anki: AnkiState;
+  deck: { deckId: string; name: string };
+  search: string;
+  setSearch: (s: string) => void;
+  selNoteId: string;
+  setSelNoteId: (id: string) => void;
+  onAddCard: () => void;
+  onAiGenerate: () => void;
+  onSaveNote: (noteId: string, fields: Record<string, string>, tags: string[]) => void;
+  onDeleteNote: (id: string) => void;
+  onResetNote: (id: string) => void;
+}) {
+  const q = search.trim().toLowerCase();
+  const noteIds = [...new Set(anki.cards.filter(c => c.deckId === deck.deckId).map(c => c.noteId))];
+  let notes = noteIds.map(id => anki.notes.find(n => n.noteId === id)).filter(Boolean) as typeof anki.notes;
+  if (q) notes = notes.filter(n => {
+    const text = (n.fields.front ?? "") + " " + (n.fields.back ?? "") + " " + (n.fields.text ?? "") + " " + (n.tags ?? []).join(" ");
+    return text.toLowerCase().includes(q);
+  });
+
+  const selNote = anki.notes.find(n => n.noteId === selNoteId);
+  const [draftFront, setDraftFront] = useState("");
+  const [draftBack, setDraftBack] = useState("");
+  const [draftText, setDraftText] = useState("");
+  const [draftExtra, setDraftExtra] = useState("");
+  const [draftTags, setDraftTags] = useState("");
+
+  useEffect(() => {
+    if (!selNote) return;
+    setDraftFront(selNote.fields.front ?? "");
+    setDraftBack(selNote.fields.back ?? "");
+    setDraftText(selNote.fields.text ?? "");
+    setDraftExtra(selNote.fields.extra ?? "");
+    setDraftTags((selNote.tags ?? []).join(" "));
+  }, [selNoteId]);
+
+  function handleSave() {
+    if (!selNote) return;
+    onSaveNote(selNote.noteId, { front: draftFront, back: draftBack, text: draftText, extra: draftExtra }, draftTags.split(/\s+/).filter(Boolean));
+  }
+
+  const statePip = (nid: string) => {
+    const cs = anki.cards.filter(c => c.noteId === nid);
+    if (cs.some(c => c.state === "review")) return "due";
+    if (cs.some(c => c.state === "learn")) return "learn";
+    return "new";
+  };
+
+  return (
+    <div className="anki-browse">
+      <header className="ab-head">
+        <input className="ab-search" type="search" placeholder="카드 검색…" value={search} onChange={e => setSearch(e.target.value)} />
+        <span style={{ color: "var(--muted)", fontSize: 12 }}>{notes.length}/{noteIds.length}개</span>
+        <div style={{ flex: 1 }} />
+        <button className="secondary-button" onClick={onAiGenerate}><Sparkles size={14} /> AI 카드 생성</button>
+        <button className="primary-button" onClick={onAddCard}><Plus size={14} /> 카드</button>
+      </header>
+      <div className="ab-body">
+        <div className="ab-list">
+          {notes.length === 0 ? <p className="empty-text">검색 결과 없음.</p> : notes.map(n => {
+            const preview = n.type === "cloze" ? (n.fields.text ?? "").replace(/\{\{c\d+::([^}:]+)(?:::[^}]*)?\}\}/g, "____") : (n.fields.front ?? "");
+            const pip = statePip(n.noteId);
+            return (
+              <button key={n.noteId} className={`ab-item ${n.noteId === selNoteId ? "active" : ""}`} onClick={() => setSelNoteId(n.noteId)}>
+                <div className="ab-item-row"><span className={`state-pip ${pip}`} /><strong>{preview.slice(0, 60)}</strong></div>
+                <span className="ab-meta">{n.type === "cloze" ? `Cloze · ${anki.cards.filter(c => c.noteId === n.noteId).length}카드` : "Basic"}</span>
+              </button>
+            );
+          })}
+        </div>
+        <div className="ab-editor">
+          {!selNote ? (
+            <div className="editor-empty">
+              <p className="empty-text">왼쪽에서 카드를 선택하거나 새 카드를 추가하세요.</p>
+              <div style={{ display: "flex", justifyContent: "center", marginTop: 12 }}>
+                <button className="primary-button" onClick={onAddCard}><Plus size={14} /> 새 카드 추가</button>
+              </div>
+            </div>
+          ) : selNote.type === "basic" ? (
+            <>
+              <div className="ae-field"><label>앞면</label><textarea rows={3} value={draftFront} onChange={e => setDraftFront(e.target.value)} /></div>
+              <div className="ae-field"><label>뒷면</label><textarea rows={4} value={draftBack} onChange={e => setDraftBack(e.target.value)} /></div>
+              <div className="ae-field"><label>태그</label><input value={draftTags} onChange={e => setDraftTags(e.target.value)} placeholder="공백으로 구분" /></div>
+              <div className="ae-actions">
+                <button className="primary-button" onClick={handleSave}><Save size={14} /> 저장</button>
+                <button className="danger-button" onClick={() => onDeleteNote(selNote.noteId)}><Trash2 size={14} /> 삭제</button>
+                <button className="ghost-button" onClick={() => onResetNote(selNote.noteId)}>진도 초기화</button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="ae-field"><label>본문 (Cloze: {"{{c1::정답}}"} 형식)</label><textarea rows={6} value={draftText} onChange={e => setDraftText(e.target.value)} /></div>
+              <div className="ae-field"><label>참고</label><textarea rows={2} value={draftExtra} onChange={e => setDraftExtra(e.target.value)} /></div>
+              <div className="ae-field"><label>태그</label><input value={draftTags} onChange={e => setDraftTags(e.target.value)} placeholder="공백으로 구분" /></div>
+              <div className="ae-actions">
+                <button className="primary-button" onClick={handleSave}><Save size={14} /> 저장</button>
+                <button className="danger-button" onClick={() => onDeleteNote(selNote.noteId)}><Trash2 size={14} /> 삭제</button>
+                <button className="ghost-button" onClick={() => onResetNote(selNote.noteId)}>진도 초기화</button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AnkiStats({ anki, deck }: { anki: AnkiState; deck: { deckId: string; name: string } }) {
+  const cards = anki.cards.filter(c => c.deckId === deck.deckId);
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const buckets = Array(7).fill(0) as number[];
+  for (const c of cards) {
+    const d = Math.floor((c.due - today.getTime()) / 86400000);
+    if (d <= 0) buckets[0]++;
+    else if (d < 7) buckets[d]++;
+  }
+  const maxF = Math.max(1, ...buckets);
+  const todayLog = anki.reviewLog.filter(l => l.ts >= today.getTime());
+  const grades = [0, 0, 0, 0] as number[];
+  for (const l of todayLog) grades[l.grade]++;
+  const totalGraded = grades.reduce((a, b) => a + b, 0) || 1;
+  const avgEase = cards.length ? (cards.reduce((a, c) => a + c.ease, 0) / cards.length).toFixed(2) : "—";
+  const stateCounts = { new: 0, learn: 0, review: 0 } as Record<string, number>;
+  for (const c of cards) stateCounts[c.state] = (stateCounts[c.state] ?? 0) + 1;
+  const gradeInfo = [{ n: "다시", c: "again", v: grades[0] }, { n: "어려움", c: "hard", v: grades[1] }, { n: "알맞음", c: "good", v: grades[2] }, { n: "쉬움", c: "easy", v: grades[3] }];
+
+  return (
+    <div className="anki-stats">
+      <div className="stats-metric-row">
+        <div className="metric-card"><span>오늘 평가</span><strong>{todayLog.length}회</strong><p>{grades[2] + grades[3]}회 통과 · {grades[0]}회 다시</p></div>
+        <div className="metric-card"><span>전체 카드</span><strong>{cards.length}장</strong><p>{stateCounts.review ?? 0} 복습 · {stateCounts.new ?? 0} 신규</p></div>
+        <div className="metric-card"><span>평균 Ease</span><strong>{avgEase}</strong><p>2.5 = Anki 기본</p></div>
+      </div>
+      <section className="panel chart-panel" style={{ marginTop: 16 }}>
+        <div className="section-heading"><h3>7일 복습 예보</h3><span>due 카드 수</span></div>
+        <div className="bar-chart" style={{ gridTemplateColumns: "repeat(7,1fr)" }}>
+          {buckets.map((v, i) => (
+            <div className="bar-item" key={i}>
+              <div className="bar-track"><div style={{ height: `${Math.max(8, (v / maxF) * 100)}%` }} /></div>
+              <span>{i === 0 ? "오늘" : `+${i}일`}</span>
+              <em style={{ fontSize: 11, color: "var(--muted)" }}>{v}장</em>
+            </div>
+          ))}
+        </div>
+      </section>
+      <section className="panel" style={{ marginTop: 16 }}>
+        <div className="section-heading"><h3>오늘의 평가 분포</h3><span>{todayLog.length}회</span></div>
+        <div className="grade-dist">
+          {gradeInfo.map(g => (
+            <div className="grade-row" key={g.c}>
+              <span className={`grade-badge ${g.c}`}>{g.n}</span>
+              <div className="grade-bar"><i className={g.c} style={{ width: `${(g.v / totalGraded) * 100}%` }} /></div>
+              <strong>{g.v}회</strong>
+            </div>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function AnkiIO({ deck, onExport, onImportJSON, onImportCSV }: {
+  deck: { name: string };
+  onExport: () => void;
+  onImportJSON: (f: File) => void;
+  onImportCSV: (f: File) => void;
+}) {
+  return (
+    <div className="anki-io">
+      <section className="panel">
+        <div className="section-heading"><h3>JSON 내보내기</h3></div>
+        <p className="empty-text" style={{ textAlign: "left" }}>현재 모든 덱·카드·평가 로그를 JSON 파일로 다운로드합니다.</p>
+        <button className="primary-button" onClick={onExport} style={{ marginTop: 8 }}>⬇ JSON 다운로드</button>
+      </section>
+      <section className="panel" style={{ marginTop: 16 }}>
+        <div className="section-heading"><h3>JSON 가져오기</h3></div>
+        <p className="empty-text" style={{ textAlign: "left" }}>JSON 파일을 업로드하면 현재 데이터에 덱·카드를 병합합니다.</p>
+        <label className="upload-zone" style={{ marginTop: 8 }}>
+          <UploadCloud size={28} />
+          <strong>JSON 파일 선택</strong>
+          <span>.json 파일 (이전에 내보낸 백업)</span>
+          <input type="file" accept=".json" onChange={e => { const f = e.target.files?.[0]; if (f) onImportJSON(f); e.target.value = ""; }} />
+        </label>
+      </section>
+      <section className="panel" style={{ marginTop: 16 }}>
+        <div className="section-heading"><h3>CSV 가져오기</h3></div>
+        <p className="empty-text" style={{ textAlign: "left" }}>각 행이 <code>앞면,뒷면</code> 형식인 CSV. 현재 선택된 덱({deck.name})에 추가됩니다.</p>
+        <label className="upload-zone" style={{ marginTop: 8 }}>
+          <UploadCloud size={28} />
+          <strong>CSV/TSV 파일 선택</strong>
+          <span>탭 또는 쉼표 구분, 헤더 없이</span>
+          <input type="file" accept=".csv,.tsv,.txt" onChange={e => { const f = e.target.files?.[0]; if (f) onImportCSV(f); e.target.value = ""; }} />
+        </label>
+      </section>
+    </div>
+  );
+}
+
+function ReviewModal({ queue, idx, backShown, anki, onReveal, onGrade, onClose }: {
+  queue: AnkiCard[];
+  idx: number;
+  backShown: boolean;
+  anki: AnkiState;
+  onReveal: () => void;
+  onGrade: (g: AnkiGrade) => void;
+  onClose: () => void;
+}) {
+  const card = queue[idx];
+  const isDone = !card;
+  const fb = card ? getCardFB(anki, card) : null;
+  const totalReviewed = anki.todayCounts.new + anki.todayCounts.learn + anki.todayCounts.review;
+  const stateLabel = card?.state === "new" ? "신규" : card?.state === "learn" ? "학습 중" : "복습";
+  const stateCls = card?.state === "new" ? "new" : card?.state === "learn" ? "learn" : "due";
+
+  return (
+    <div className="review-overlay" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="review-modal">
+        <div className="review-header">
+          {!isDone && <span className={`card-kind ${stateCls}`}>{stateLabel}</span>}
+          <span className="card-counter">{!isDone ? `${idx + 1} / ${queue.length}` : ""}</span>
+          {!isDone && <span className="card-deck-label">{fb?.deckName}</span>}
+          <button className="icon-button" onClick={onClose}><X size={16} /></button>
+        </div>
+
+        {isDone ? (
+          <div className="session-done">
+            <div style={{ fontSize: 48 }}>✓</div>
+            <h3>오늘 학습 완료!</h3>
+            <p>{totalReviewed}장 평가했습니다.</p>
+            <button className="primary-button" onClick={onClose}>닫기</button>
+          </div>
+        ) : (
+          <>
+            <div className="card-body">
+              <div className="card-front" dangerouslySetInnerHTML={{ __html: fb?.front ?? "" }} />
+              <div className={`card-back ${backShown ? "show" : ""}`} dangerouslySetInnerHTML={{ __html: fb?.back ?? "" }} />
+            </div>
+            <div className={`card-actions ${backShown ? "show-back" : ""}`}>
+              {!backShown ? (
+                <button className="primary-button" onClick={onReveal} style={{ width: "100%" }}>
+                  답 보기 <span style={{ opacity: 0.5, fontSize: 11 }}>(Space)</span>
+                </button>
+              ) : (
+                <div className="grade-buttons">
+                  {([0, 1, 2, 3] as AnkiGrade[]).map(g => {
+                    const labels = ["다시", "어려움", "알맞음", "쉬움"];
+                    const cls = ["again", "hard", "good", "easy"];
+                    const hint = ["1", "2", "3", "4"];
+                    return (
+                      <button key={g} className={`grade-btn ${cls[g]}`} onClick={() => onGrade(g)}>
+                        <span>{labels[g]}</span>
+                        <em>{peekLabel(card, g, anki.settings.learnSteps)}</em>
+                        <small>{hint[g]}</small>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
 }
