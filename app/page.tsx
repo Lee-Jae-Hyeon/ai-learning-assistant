@@ -563,11 +563,11 @@ export default function Home() {
             character={character}
             totalMinutes={totalMinutes}
             todayMinutes={todayMinutes}
-            summaryCount={state.summaries.length}
-            noteCount={state.notes.length}
             sessions={userSessions}
+            anki={anki}
             onGoMaterials={() => setActiveTab("materials")}
             onGoTimer={() => setActiveTab("timer")}
+            onGoAnki={() => { setActiveTab("anki"); startReview(ankiDeckId); }}
           />
         )}
 
@@ -661,59 +661,134 @@ function NavButton({ icon, label, active, onClick }: { icon: React.ReactNode; la
   );
 }
 
+function calcStreak(sessions: StudySession[]): number {
+  const dates = new Set(sessions.map(s => s.endTime.slice(0, 10)));
+  let streak = 0;
+  for (let i = 0; i < 365; i++) {
+    const d = new Date(); d.setDate(d.getDate() - i);
+    const key = d.toISOString().slice(0, 10);
+    if (dates.has(key)) streak++;
+    else if (i > 0) break;
+  }
+  return streak;
+}
+
 function Overview({
-  character,
-  totalMinutes,
-  todayMinutes,
-  summaryCount,
-  noteCount,
-  sessions,
-  onGoMaterials,
-  onGoTimer
+  character, totalMinutes, todayMinutes, sessions, anki, onGoMaterials, onGoTimer, onGoAnki
 }: {
   character: ReturnType<typeof calculateCharacter>;
   totalMinutes: number;
   todayMinutes: number;
-  summaryCount: number;
-  noteCount: number;
   sessions: StudySession[];
+  anki: AnkiState;
   onGoMaterials: () => void;
   onGoTimer: () => void;
+  onGoAnki: () => void;
 }) {
+  const weekStart = recentDays(7)[0];
+  const weekMinutes = sessions.filter(s => s.endTime.slice(0, 10) >= weekStart).reduce((a, s) => a + s.durationMinutes, 0);
+  const streak = calcStreak(sessions);
+
+  const totalAnkiNew = anki.decks.reduce((a, d) => a + getDeckCounts(anki, d.deckId).new, 0);
+  const totalAnkiLearn = anki.decks.reduce((a, d) => a + getDeckCounts(anki, d.deckId).learn, 0);
+  const totalAnkiReview = anki.decks.reduce((a, d) => a + getDeckCounts(anki, d.deckId).review, 0);
+  const totalAnkiDue = totalAnkiNew + totalAnkiLearn + totalAnkiReview;
+  const ankiDone = anki.todayCounts.new + anki.todayCounts.learn + anki.todayCounts.review;
+  const ankiTotal = totalAnkiDue + ankiDone;
+  const ankiPct = ankiTotal ? Math.round((ankiDone / ankiTotal) * 100) : 0;
+
   return (
-    <div className="dashboard-grid">
-      <section className="hero-band">
-        <div>
-          <p className="eyebrow">학습 흐름</p>
-          <h3>업로드, 요약, 복습, 기록을 한 번에 이어갑니다.</h3>
-          <p>요약 자료와 노트를 만들고 타이머로 학습을 마치면 캐릭터와 통계가 자동으로 갱신됩니다.</p>
-          <div className="inline-actions">
-            <button className="primary-button" onClick={onGoMaterials}>
-              <UploadCloud size={17} />
-              자료 업로드
-            </button>
-            <button className="secondary-button" onClick={onGoTimer}>
-              <Clock3 size={17} />
-              타이머 시작
+    <div className="overview-layout">
+      <div className="overview-main">
+        <section className="panel">
+          <div className="section-heading">
+            <h3>최근 학습 기록</h3>
+            <span>{sessions.length}개 세션</span>
+          </div>
+          <SessionList sessions={sessions.slice(0, 5)} />
+          <div className="inline-actions" style={{ marginTop: 16 }}>
+            <button className="primary-button" onClick={onGoMaterials}><UploadCloud size={16} /> 자료 업로드</button>
+            <button className="secondary-button" onClick={onGoTimer}><Clock3 size={16} /> 타이머 시작</button>
+          </div>
+        </section>
+        <CalendarWidget sessions={sessions} />
+      </div>
+
+      <aside className="overview-rail">
+        <CharacterCard character={character} />
+
+        <section className="panel rail-stats">
+          <h4>오늘 / 누적</h4>
+          <div className="ts-row"><span>오늘 학습</span><strong>{formatMinutes(todayMinutes)}</strong></div>
+          <div className="ts-row"><span>이번 주</span><strong>{formatMinutes(weekMinutes)}</strong></div>
+          <div className="ts-row"><span>총 학습 시간</span><strong>{formatMinutes(totalMinutes)}</strong></div>
+          <div className="ts-row"><span>연속 학습</span><strong>{streak}일</strong></div>
+        </section>
+
+        <section className="panel anki-widget">
+          <div className="aw-head">
+            <div className="aw-title"><span className="dot" />ANKI 스케줄러</div>
+            <div className="aw-due">오늘 마감 · 23:59</div>
+          </div>
+          <div className="aw-counts">
+            <div className="aw-count new"><span className="n">{totalAnkiNew}</span><span className="l">신규</span></div>
+            <div className="aw-count learn"><span className="n">{totalAnkiLearn}</span><span className="l">학습 중</span></div>
+            <div className="aw-count due"><span className="n">{totalAnkiReview}</span><span className="l">복습</span></div>
+          </div>
+          <div className="aw-foot">
+            <div className="aw-progress"><i style={{ width: `${ankiPct}%` }} /></div>
+            <button className="primary-button" style={{ width: "100%", marginTop: 10 }} onClick={onGoAnki}>
+              복습 시작 →
             </button>
           </div>
-        </div>
-        <CharacterCard character={character} />
-      </section>
-
-      <MetricCard title="누적 학습" value={formatMinutes(totalMinutes)} detail="타이머 기록 기준" />
-      <MetricCard title="오늘 학습" value={formatMinutes(todayMinutes)} detail="오늘 종료된 세션" />
-      <MetricCard title="저장 요약" value={`${summaryCount}개`} detail="자료/노트 기반" />
-      <MetricCard title="학습 노트" value={`${noteCount}개`} detail="마크다운 노트" />
-
-      <section className="wide-panel">
-        <div className="section-heading">
-          <h3>최근 학습 기록</h3>
-          <span>{sessions.length}개 세션</span>
-        </div>
-        <SessionList sessions={sessions.slice(0, 5)} />
-      </section>
+        </section>
+      </aside>
     </div>
+  );
+}
+
+function CalendarWidget({ sessions }: { sessions: StudySession[] }) {
+  const [calDate, setCalDate] = useState(() => new Date());
+  const year = calDate.getFullYear();
+  const month = calDate.getMonth();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const firstDow = (new Date(year, month, 1).getDay() + 6) % 7; // Mon=0
+  const today = new Date();
+  const sessionDays = new Set(
+    sessions
+      .filter(s => s.endTime.slice(0, 7) === `${year}-${String(month + 1).padStart(2, "0")}`)
+      .map(s => parseInt(s.endTime.slice(8, 10), 10))
+  );
+
+  const cells: React.ReactNode[] = [];
+  for (let i = 0; i < firstDow; i++) cells.push(<div key={`e${i}`} className="cal-cell empty" />);
+  for (let d = 1; d <= daysInMonth; d++) {
+    const isToday = today.getFullYear() === year && today.getMonth() === month && today.getDate() === d;
+    cells.push(
+      <div key={d} className={`cal-cell ${isToday ? "today" : ""}`}>
+        <div className="d">{d}</div>
+        {sessionDays.has(d) && <div className="cal-mark" />}
+      </div>
+    );
+  }
+  const trailing = (7 - ((firstDow + daysInMonth) % 7)) % 7;
+  for (let i = 0; i < trailing; i++) cells.push(<div key={`t${i}`} className="cal-cell empty" />);
+
+  return (
+    <section className="panel" style={{ marginTop: 16 }}>
+      <div className="cal-head">
+        <h3 className="section-heading" style={{ margin: 0 }}>{year}년 {month + 1}월</h3>
+        <div className="cal-nav">
+          <button className="cal-btn" onClick={() => setCalDate(d => new Date(d.getFullYear(), d.getMonth() - 1, 1))}>‹</button>
+          <button className="cal-btn" onClick={() => setCalDate(new Date())}>오늘</button>
+          <button className="cal-btn" onClick={() => setCalDate(d => new Date(d.getFullYear(), d.getMonth() + 1, 1))}>›</button>
+        </div>
+      </div>
+      <div className="cal">
+        {["월", "화", "수", "목", "금", "토", "일"].map(d => <div key={d} className="cal-dow">{d}</div>)}
+        {cells}
+      </div>
+    </section>
   );
 }
 
