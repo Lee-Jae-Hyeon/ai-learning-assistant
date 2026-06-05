@@ -249,7 +249,7 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
 .note-list-row { display: flex; align-items: stretch; gap: 3px; padding-left: 22px; }
 .note-list-row:hover .note-ctx-btn { opacity: 1; }
 .note-list-row .note-list-item { flex: 1; min-width: 0; border-radius: var(--radius-sm); }
-.note-list-item { text-align: left; padding: 8px 10px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-sm); cursor: pointer; font-family: inherit; display: flex; flex-direction: column; gap: 2px; transition: background .15s, border-color .15s, transform .1s; width: 100%; }; flex-direction: column; gap: 2px; width: 100%; transition: background .12s, border-color .12s, transform .1s; }
+.note-list-item { text-align: left; padding: 8px 10px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-sm); cursor: pointer; font-family: inherit; display: flex; flex-direction: column; gap: 2px; transition: background .15s, border-color .15s, transform .1s; width: 100%; }
 .note-list-item:hover { background: var(--surface-2); transform: translateX(2px); }
 .note-list-row.active .note-list-item { border-color: var(--accent); background: var(--accent-soft); }
 .note-list-item strong { font-size: 13px; font-weight: 600; }
